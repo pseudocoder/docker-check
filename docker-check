@@ -1,0 +1,202 @@
+#!/bin/bash
+
+# Script to check docker containers for out-of-date images
+#
+# For example, run docker-check -a -q through cron and the output will be a list of out-of-date
+# containers which could be sent by email
+#
+# (c)2021 pseudocode.ch
+#
+# You may use, modify and republish this script as long as your acknowledge the authors.
+# You may use this script within a commercial organisation, but not sell it or use it directly in a commercial offering.
+# See https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+show_help () {
+  cat << EOF
+Usage: docker-check [-?] [-q] [-v] [-a] [container] [container]
+
+Checks docker containers to confirm if their image is up-to-date relative to the repo.
+
+Options:
+-q           quiet - only report out-of-date containers
+-v           verbose
+-vv          double verbose - prints requests and outputs manifest to manifest.json
+-a           check all containers
+container    name of container to check (multiple containers can be provided)
+EOF
+  exit 1
+}
+
+log () {
+  if [[ $LOG -gt 0 ]]; then
+    echo $@
+  fi
+}
+
+logv () {
+  if [[ $LOG -gt 1 ]]; then
+    echo $@
+  fi
+}
+
+logvv () {
+  if [[ $LOG -gt 2 ]]; then
+    echo $@
+  fi
+}
+
+logq () {
+  echo $@
+}
+
+ALL="false"
+LOG=1
+NAMES=()
+	
+for arg in "$@"
+do
+  if [[ "$arg" == "-?" || "$arg" == "--help" ]]; then
+    show_help
+  fi
+
+  if [[ "$arg" == "-q" ]]; then
+    LOG=0
+    continue
+  fi
+
+  if [[ "$arg" == "-v" ]]; then
+    LOG=2
+    continue
+  fi
+
+  if [[ "$arg" == "-vv" ]]; then
+    LOG=3
+    continue
+  fi
+
+  if [[ "$arg" == "-a" ]]; then
+    ALL="true"
+    continue
+  fi
+
+  if [[ "$arg" =~ "^-" ]]; then
+    echo "Invalid option: $arg"
+    show_help
+  fi
+
+  NAMES+=("$arg")
+done
+
+if [[ "$ALL" == "true" && ${#NAMES[@]} -ne 0 ]]; then
+  echo "Invalid usage: specify -a OR container names"
+  show_help
+fi
+
+if [[ "$ALL" == "true" ]]; then
+  logv "Checking all containers"
+
+  readarray NAMES < <(docker ps -a --format '{{.Names}}')
+  logv ${NAMES[@]}
+fi
+
+for name in ${NAMES[@]}
+do
+  logv "Checking container $name"
+
+  IMG=$(docker container inspect "$name" | jq -r '.[0].Config.Image')
+
+  SHA=$(docker container inspect "$name" | jq -r '.[0].Image')
+  SHA=${SHA#sha256:}
+
+  SHA2=$(docker image inspect "$SHA" | jq -r '.[0].Config.Image')
+  SHA2=${SHA2#sha256:}
+
+  logv "Image $IMG  SHA $SHA2"
+
+  IFS=: read IMGNAME IMGTAG <<< "$IMG"
+
+  if [[ "$IMGTAG" == "" ]]; then
+    IMGTAG="latest"
+  fi
+
+  IFS=/ read a b c <<< "$IMGNAME"
+
+  SERVICE=registry.docker.io
+  AUTH=auth.docker.io
+  REG=registry.hub.docker.com
+
+  if [[ "$b" == "" ]]; then
+    IMGNAME="library/$a"
+  elif [[ "$c" == "" ]]; then
+    IMGNAME="$a/$b"
+  else
+    IMGNAME="$b/$c"
+    SERVICE="$a"
+    AUTH="$a"
+    REG="$a"
+    logv "Registry $a"
+  fi
+
+  logv "Name $IMGNAME tag $IMGTAG"
+
+  URL="https://$AUTH/token?service=$SERVICE&scope=repository:$IMGNAME:pull"
+  logvv "GET $URL"
+
+  TOKEN=$(curl -fsSL "$URL" | jq -r .token)
+
+  logvv "Token $TOKEN"
+  
+  URL="https://$REG/v2/$IMGNAME/manifests/$IMGTAG"
+  logvv "GET $URL"
+  MANIFEST=$(curl -sL -H "Authorization: Bearer ${TOKEN}" "$URL")
+
+  if [[ $LOG -gt 2 ]]; then
+    echo $MANIFEST | jq '.' > manifest.json
+    echo "Manifest written to manifest.json"
+  fi
+
+  if [[ "$(echo $MANIFEST | jq '.schemaVersion')" == "2" ]]; then
+
+    IFS=" " read OS ARCH <<< `docker version -f '{{.Server.Os}} {{.Server.Arch}}'`
+    logv "Schema version 2 looking for $OS/$ARCH"
+
+    SHA3=$(echo $MANIFEST | jq -r '.manifests | .[] | select(.platform.architecture=="'${ARCH}'" and .platform.os=="'${OS}'") | .digest')
+    logvv "Manifest SHA $SHA3"
+
+    URL="https://$REG/v2/$IMGNAME/manifests/$SHA3"
+    logvv "GET $URL"
+    MANIFEST2=$(curl -sL -H "Authorization: Bearer ${TOKEN}" "$URL")
+
+    if [[ $LOG -gt 2 ]]; then
+      echo $MANIFEST2 | jq '.' > manifest2.json
+      echo "2nd manifest written to manifest2.json"
+    fi
+
+    SHA4=$(echo $MANIFEST2 | jq -r '.config.digest')
+    logvv "Config blob SHA $SHA4"
+
+    URL="https://$REG/v2/$IMGNAME/blobs/$SHA4"
+    logvv "GET $URL"
+    MANIFEST3=$(curl -sL -H "Authorization: Bearer ${TOKEN}" "$URL")
+
+    if [[ $LOG -gt 2 ]]; then
+      echo $MANIFEST3 | jq '.' > manifest3.json
+      echo "Config manifest written to manifest3.json"
+    fi
+
+    echo $MANIFEST3 | grep -q "$SHA2"
+    OOD=$?
+
+  else
+
+    echo $MANIFEST | grep -q "$SHA2"
+    OOD=$?
+
+  fi
+
+  if [[ $OOD -eq 0 ]]; then
+    log "$name ($IMG) is up-to-date"
+  else
+    logq "$name ($IMG) is out of date"
+  fi
+done
