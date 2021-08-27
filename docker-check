@@ -53,6 +53,10 @@ ALL="false"
 LOG=1
 NAMES=()
 	
+if [[ $# -eq 0 ]]; then
+  show_help
+fi
+
 for arg in "$@"
 do
   if [[ "$arg" == "-?" || "$arg" == "--help" ]]; then
