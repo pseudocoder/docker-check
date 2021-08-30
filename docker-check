@@ -201,6 +201,6 @@ do
   if [[ $OOD -eq 0 ]]; then
     log "$name ($IMG) is up-to-date"
   else
-    logq "$name ($IMG) is out of date"
+    logq "$name ($IMG) is out of date (local created "$(docker image inspect $IMG | jq -r '(now - (.[0].Created | split(".")[0] + "Z" | fromdate)) / 24 / 60 / 60 | floor | tostring + " day" + if . == 1 then "" else "s" end')" ago)"
   fi
 done
