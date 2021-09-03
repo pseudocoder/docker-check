@@ -15,6 +15,7 @@ Note testing is fairly limited, it will quite likely break with new cases / form
     -v           verbose
     -vv          double verbose - prints requests and outputs manifest(s) to manifest#.json
     -a           check all containers
+    -p           pull out-of-date images
     container    name of container to check (multiple containers can be provided)`
 
 ### Recommended Usage
