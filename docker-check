@@ -22,6 +22,7 @@ Options:
 -v           verbose
 -vv          double verbose - prints requests and outputs manifest to manifest.json
 -a           check all containers
+-p           pulls out-of-date images
 container    name of container to check (multiple containers can be provided)
 EOF
   exit 1
@@ -52,6 +53,7 @@ logq () {
 ALL="false"
 LOG=1
 NAMES=()
+PULL=0
 	
 if [[ $# -eq 0 ]]; then
   show_help
@@ -65,6 +67,11 @@ do
 
   if [[ "$arg" == "-q" ]]; then
     LOG=0
+    continue
+  fi
+
+  if [[ "$arg" == "-p" ]]; then
+    PULL=1
     continue
   fi
 
@@ -202,5 +209,9 @@ do
     log "$name ($IMG) is up-to-date"
   else
     logq "$name ($IMG) is out of date (local created "$(docker image inspect $IMG | jq -r '(now - (.[0].Created | split(".")[0] + "Z" | fromdate)) / 24 / 60 / 60 | floor | tostring + " day" + if . == 1 then "" else "s" end')" ago)"
+
+    if [[ $PULL -eq 1 ]]; then
+      docker pull $IMG
+    fi
   fi
 done
